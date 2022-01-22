@@ -45,7 +45,7 @@ export class Ethereum extends Bitcoin {
             breaking: true,
             generateRuntimeArgs(data: CryptoNodeData): string {
               const { network = '' } = data;
-              return ` --config=${this.configPath} --syncmode snap` + (network === NetworkType.MAINNET ? '' : ` -${network.toLowerCase()}`);
+              return ` --config=${this.configPath} --ipcdisable --syncmode snap` + (network === NetworkType.MAINNET ? '' : ` -${network.toLowerCase()}`);
             },
             async upgrade(data: CryptoNodeData): Promise<boolean> {
               const { configPath } = data;
@@ -321,7 +321,6 @@ export class Ethereum extends Bitcoin {
         return '';
       }
     } catch(err) {
-      this._logError(err);
       return '';
     }
   }
