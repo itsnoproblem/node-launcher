@@ -1,5 +1,5 @@
 import { CryptoNodeData, VersionDockerImage } from '../../interfaces/crypto-node';
-import { defaultDockerNetwork, NetworkType, NodeClient, NodeType, Status } from '../../constants';
+import { defaultDockerNetwork, NetworkType, NodeClient, NodeType, Role, Status } from '../../constants';
 import { Docker } from '../../util/docker';
 import { ChildProcess } from 'child_process';
 import { v4 as uuid} from 'uuid';
@@ -35,6 +35,20 @@ export class Ethereum extends Bitcoin {
       case NodeClient.GETH:
         versions = [
           {
+            version: '1.10.15',
+            clientVersion: '1.10.15',
+            image: 'ethereum/client-go:v1.10.15',
+            dataDir: '/root/.ethereum',
+            walletDir: '/root/keystore',
+            configPath: '/root/config.toml',
+            networks: [NetworkType.MAINNET, NetworkType.RINKEBY],
+            breaking: false,
+            generateRuntimeArgs(data: CryptoNodeData): string {
+              const { network = '' } = data;
+              return ` --config=${this.configPath}` + (network === NetworkType.MAINNET ? '' : ` -${network.toLowerCase()}`);
+            },
+          },
+          {
             version: '1.10.14',
             clientVersion: '1.10.14',
             image: 'ethereum/client-go:v1.10.14',
@@ -45,18 +59,31 @@ export class Ethereum extends Bitcoin {
             breaking: true,
             generateRuntimeArgs(data: CryptoNodeData): string {
               const { network = '' } = data;
-              return ` --config=${this.configPath} --syncmode snap` + (network === NetworkType.MAINNET ? '' : ` -${network.toLowerCase()}`);
+              return ` --config=${this.configPath}` + (network === NetworkType.MAINNET ? '' : ` -${network.toLowerCase()}`);
             },
             async upgrade(data: CryptoNodeData): Promise<boolean> {
               const { configPath } = data;
               if(configPath && (await fs.pathExists(configPath))) {
                 const conf = await fs.readFile(configPath, 'utf8');
-                const newConf = conf
+                const splitConf = conf
                   .split('\n')
-                  .map(str => str.trim())
-                  .filter(str => !/^SyncMode\s*=/.test(str))
-                  .join('\n');
-                await fs.writeFile(configPath, newConf, 'utf8');
+                  .map(str => str.trim());
+                const syncModeFastIdx = splitConf
+                  .findIndex(str => {
+                    const split = str
+                      .split('=')
+                      .map(s => s.trim());
+                    const [ key = '', val = '' ] = split;
+                    return key === 'SyncMode' && val.includes('fast');
+                  });
+                if(syncModeFastIdx >= 0) {
+                  const newConf = [
+                    ...splitConf.slice(0, syncModeFastIdx),
+                    'SyncMode = "snap"',
+                    ...splitConf.slice(syncModeFastIdx + 1),
+                  ].join('\n');
+                  await fs.writeFile(configPath, newConf, 'utf8');
+                }
               }
               return true;
             },
@@ -153,6 +180,10 @@ export class Ethereum extends Bitcoin {
     NetworkType.RINKEBY,
   ];
 
+  static roles = [
+    Role.NODE,
+  ];
+
   static defaultRPCPort = {
     [NetworkType.MAINNET]: 8545,
     [NetworkType.RINKEBY]: 18545,
@@ -201,6 +232,7 @@ export class Ethereum extends Bitcoin {
   remote = false;
   remoteDomain = '';
   remoteProtocol = '';
+  role = Ethereum.roles[0];
 
   constructor(data: CryptoNodeData, docker?: Docker) {
     super(data, docker);
@@ -228,6 +260,7 @@ export class Ethereum extends Bitcoin {
     this.clientVersion = data.clientVersion || versionObj.clientVersion || '';
     this.dockerImage = this.remote ? '' : data.dockerImage ? data.dockerImage : (versionObj.image || '');
     this.archival = data.archival || this.archival;
+    this.role = data.role || this.role;
     if(docker)
       this._docker = docker;
   }
@@ -360,6 +393,19 @@ export class Ethereum extends Bitcoin {
     return blockHeight || '';
   }
 
+  _makeSyncingCall(): Promise<any> {
+    return request
+      .post(this.endpoint())
+      .set('Accept', 'application/json')
+      .timeout(this._requestTimeout)
+      .send({
+        id: '',
+        jsonrpc: '2.0',
+        method: 'eth_syncing',
+        params: [],
+      });
+  }
+
   async getStatus(): Promise<string> {
     let status;
     try {
@@ -376,16 +422,7 @@ export class Ethereum extends Bitcoin {
 
     if(status !== Status.STOPPED) {
       try {
-        const res = await request
-          .post(this.endpoint())
-          .set('Accept', 'application/json')
-          .timeout(this._requestTimeout)
-          .send({
-            id: '',
-            jsonrpc: '2.0',
-            method: 'eth_syncing',
-            params: [],
-          });
+        const res = await this._makeSyncingCall();
         if(res.body.result !== false)
           status = Status.SYNCING;
       } catch(err) {

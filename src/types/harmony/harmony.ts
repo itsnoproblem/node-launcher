@@ -1,6 +1,6 @@
 import { Ethereum } from '../ethereum/ethereum';
 import { CryptoNodeData, VersionDockerImage } from '../../interfaces/crypto-node';
-import { defaultDockerNetwork, NetworkType, NodeClient, NodeType } from '../../constants';
+import { defaultDockerNetwork, NetworkType, NodeClient, NodeType, Role } from '../../constants';
 import { Docker } from '../../util/docker';
 import { v4 as uuid } from 'uuid';
 import { filterVersionsByNetworkType } from '../../util';
@@ -8,6 +8,7 @@ import { ChildProcess } from 'child_process';
 import os from 'os';
 import path from 'path';
 import fs from 'fs-extra';
+import request from 'superagent';
 
 const coreConfig = `
 Version = "2.5.0"
@@ -35,7 +36,6 @@ Version = "2.5.0"
 [General]
   DataDir = "/root/data"
   IsArchival = false
-  IsBackup = false
   IsBeaconArchival = false
   IsOffline = false
   NoStaking = true
@@ -43,7 +43,6 @@ Version = "2.5.0"
   ShardID = {{SHARD}}
 
 [HTTP]
-  AuthPort = 9501
   Enabled = true
   IP = "0.0.0.0"
   Port = {{RPC_PORT}}
@@ -66,19 +65,13 @@ Version = "2.5.0"
   NetworkType = "mainnet"
 
 [P2P]
-  DiscConcurrency = 0
   IP = "0.0.0.0"
   KeyFile = "./.hmykey"
-  MaxConnsPerIP = 10
   Port = {{PEER_PORT}}
 
 [Pprof]
   Enabled = false
-  Folder = "./profiles"
   ListenAddr = "127.0.0.1:6060"
-  ProfileDebugValues = [0]
-  ProfileIntervals = [600]
-  ProfileNames = []
 
 [RPCOpt]
   DebugEnabled = false
@@ -100,7 +93,6 @@ Version = "2.5.0"
   BlacklistFile = "./.hmy/blacklist.txt"
 
 [WS]
-  AuthPort = 9801
   Enabled = true
   IP = "127.0.0.1"
   Port = 9800
@@ -118,6 +110,32 @@ export class Harmony extends Ethereum {
     switch(client) {
       case NodeClient.CORE:
         versions = [
+          {
+            version: '4.3.4',
+            clientVersion: '4.3.4',
+            image: 'rburgett/harmony:4.3.4',
+            dataDir: '/root/data',
+            walletDir: '/root/keystore',
+            configPath: '/harmony/harmony.conf',
+            networks: [NetworkType.MAINNET],
+            breaking: false,
+            generateRuntimeArgs(data: CryptoNodeData): string {
+              return ` -c ${this.configPath}`;
+            },
+          },
+          {
+            version: '4.3.2',
+            clientVersion: '4.3.2',
+            image: 'pocketfoundation/harmony:4.3.2-29-g1c450bbc',
+            dataDir: '/root/data',
+            walletDir: '/root/keystore',
+            configPath: '/harmony/harmony.conf',
+            networks: [NetworkType.MAINNET],
+            breaking: false,
+            generateRuntimeArgs(data: CryptoNodeData): string {
+              return ` -c ${this.configPath}`;
+            },
+          },
           {
             version: '4.3.1',
             clientVersion: '4.3.1',
@@ -164,6 +182,10 @@ export class Harmony extends Ethereum {
     NetworkType.MAINNET,
   ];
 
+  static roles = [
+    Role.NODE,
+  ];
+
   static defaultRPCPort = {
     [NetworkType.MAINNET]: 9500,
   };
@@ -174,7 +196,7 @@ export class Harmony extends Ethereum {
 
   static defaultCPUs = 8;
 
-  static defaultMem = 16384;
+  static defaultMem = 32768;
 
   static generateConfig(client = Harmony.clients[0], network = NetworkType.MAINNET, peerPort = Harmony.defaultPeerPort[NetworkType.MAINNET], rpcPort = Harmony.defaultRPCPort[NetworkType.MAINNET], shard = 0): string {
     switch(client) {
@@ -212,6 +234,7 @@ export class Harmony extends Ethereum {
   remoteDomain = '';
   remoteProtocol = '';
   shard = 0;
+  role = Harmony.roles[0];
 
   constructor(data: HarmonyNodeData, docker?: Docker) {
     super(data, docker);
@@ -240,6 +263,7 @@ export class Harmony extends Ethereum {
     this.dockerImage = this.remote ? '' : data.dockerImage ? data.dockerImage : (versionObj.image || '');
     this.archival = data.archival || this.archival;
     this.shard = data.shard || this.shard;
+    this.role = data.role || this.role;
     if(docker)
       this._docker = docker;
   }
@@ -308,6 +332,19 @@ export class Harmony extends Ethereum {
       this.peerPort,
       this.rpcPort,
       this.shard);
+  }
+
+  _makeSyncingCall(): Promise<any> {
+    return request
+      .post(this.endpoint())
+      .set('Accept', 'application/json')
+      .timeout(this._requestTimeout)
+      .send({
+        id: '',
+        jsonrpc: '2.0',
+        method: 'hmy_syncing',
+        params: [],
+      });
   }
 
 }
