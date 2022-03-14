@@ -7,8 +7,8 @@ import { filterVersionsByNetworkType } from '../../util';
 import { ChildProcess } from 'child_process';
 import os from 'os';
 import path from 'path';
-import fs from 'fs-extra';
 import request from 'superagent';
+import { FS } from '../../util/fs';
 
 const coreConfig = `
 Version = "2.5.0"
@@ -116,11 +116,11 @@ export class Harmony extends Ethereum {
             image: 'rburgett/harmony:4.3.4',
             dataDir: '/root/data',
             walletDir: '/root/keystore',
-            configPath: '/harmony/harmony.conf',
+            configDir: '/harmony/config',
             networks: [NetworkType.MAINNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` -c ${this.configPath}`;
+              return ` -c ${path.join(this.configDir, Harmony.configName(data))}`;
             },
           },
           {
@@ -129,11 +129,11 @@ export class Harmony extends Ethereum {
             image: 'pocketfoundation/harmony:4.3.2-29-g1c450bbc',
             dataDir: '/root/data',
             walletDir: '/root/keystore',
-            configPath: '/harmony/harmony.conf',
+            configDir: '/harmony/config',
             networks: [NetworkType.MAINNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` -c ${this.configPath}`;
+              return ` -c ${path.join(this.configDir, Harmony.configName(data))}`;
             },
           },
           {
@@ -142,11 +142,11 @@ export class Harmony extends Ethereum {
             image: 'pocketfoundation/harmony:4.3.1',
             dataDir: '/root/data',
             walletDir: '/root/keystore',
-            configPath: '/harmony/harmony.conf',
+            configDir: '/harmony/config',
             networks: [NetworkType.MAINNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` -c ${this.configPath}`;
+              return ` -c ${path.join(this.configDir, Harmony.configName(data))}`;
             },
           },
           {
@@ -155,11 +155,11 @@ export class Harmony extends Ethereum {
             image: 'pocketfoundation/harmony:4.3.0',
             dataDir: '/root/data',
             walletDir: '/root/keystore',
-            configPath: '/harmony/harmony.conf',
+            configDir: '/harmony/config',
             networks: [NetworkType.MAINNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` -c ${this.configPath}`;
+              return ` -c ${path.join(this.configDir, Harmony.configName(data))}`;
             },
           },
         ];
@@ -211,6 +211,10 @@ export class Harmony extends Ethereum {
     }
   }
 
+  static configName(data: CryptoNodeData): string {
+    return 'harmony.conf';
+  }
+
   id: string;
   ticker = 'one';
   name = 'Harmony One';
@@ -229,7 +233,7 @@ export class Harmony extends Ethereum {
   dockerNetwork = defaultDockerNetwork;
   dataDir = '';
   walletDir = '';
-  configPath = '';
+  configDir = '';
   remote = false;
   remoteDomain = '';
   remoteProtocol = '';
@@ -250,7 +254,7 @@ export class Harmony extends Ethereum {
     this.dockerNetwork = data.dockerNetwork || this.dockerNetwork;
     this.dataDir = data.dataDir || this.dataDir;
     this.walletDir = data.walletDir || this.walletDir;
-    this.configPath = data.configPath || this.configPath;
+    this.configDir = data.configDir || this.configDir;
     this.createdAt = data.createdAt || this.createdAt;
     this.updatedAt = data.updatedAt || this.updatedAt;
     this.remote = data.remote || this.remote;
@@ -264,11 +268,14 @@ export class Harmony extends Ethereum {
     this.archival = data.archival || this.archival;
     this.shard = data.shard || this.shard;
     this.role = data.role || this.role;
-    if(docker)
+    if(docker) {
       this._docker = docker;
+      this._fs = new FS(docker);
+    }
   }
 
-  async start(): Promise<ChildProcess> {
+  async start(): Promise<ChildProcess[]> {
+    const fs = this._fs;
     // const versionData = Harmony.versions(this.client, this.network).find(({ version }) => version === this.version);
     const versions = Harmony.versions(this.client, this.network);
     const versionData = versions.find(({ version }) => version === this.version) || versions[0];
@@ -277,7 +284,7 @@ export class Harmony extends Ethereum {
     const {
       dataDir: containerDataDir,
       walletDir: containerWalletDir,
-      configPath: containerConfigPath,
+      configDir: containerConfigDir,
     } = versionData;
     let args = [
       '-i',
@@ -298,11 +305,13 @@ export class Harmony extends Ethereum {
     args = [...args, '-v', `${walletDir}:${containerWalletDir}`];
     await fs.ensureDir(walletDir);
 
-    const configPath = this.configPath || path.join(tmpdir, uuid());
+    const configDir = this.configDir || path.join(tmpdir, uuid());
+    await fs.ensureDir(configDir);
+    const configPath = path.join(configDir, Harmony.configName(this));
     const configExists = await fs.pathExists(configPath);
     if(!configExists)
       await fs.writeFile(configPath, this.generateConfig(), 'utf8');
-    args = [...args, '-v', `${configPath}:${containerConfigPath}`];
+    args = [...args, '-v', `${configDir}:${containerConfigDir}`];
 
     await this._docker.pull(this.dockerImage, str => this._logOutput(str));
 
@@ -315,7 +324,10 @@ export class Harmony extends Ethereum {
       code => this._logClose(code),
     );
     this._instance = instance;
-    return instance;
+    this._instances = [
+      instance,
+    ];
+    return this.instances();
   }
 
   toObject(): HarmonyNodeData {

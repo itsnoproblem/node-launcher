@@ -1,6 +1,6 @@
 {
   "name": "da-node-runner",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "description": "Full crypto node runner used in Node Pilot.",
   "main": "./lib/index.js",
   "scripts": {
@@ -27,6 +27,7 @@
   "homepage": "https://github.com/rBurgett/da-node-runner#readme",
   "devDependencies": {
     "@types/lodash": "^4.14.177",
+    "@types/node": "^17.0.21",
     "eslint": "^7.26.0",
     "lodash": "^4.17.21",
     "mocha": "^8.4.0",

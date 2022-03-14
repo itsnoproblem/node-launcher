@@ -7,7 +7,7 @@ import { Docker } from '../../util/docker';
 import { ChildProcess } from 'child_process';
 import os from 'os';
 import path from 'path';
-import fs from 'fs-extra';
+import { FS } from '../../util/fs';
 
 const coreConfig = `
 server=1
@@ -38,11 +38,11 @@ export class Dash extends Bitcoin {
             image: 'blocknetdx/dash:v0.16.1.1',
             dataDir: '/opt/blockchain/data',
             walletDir: '/opt/blockchain/wallets',
-            configPath: '/opt/blockchain/dash.conf',
+            configDir: '/opt/blockchain/config',
             networks: [NetworkType.MAINNET, NetworkType.TESTNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` dashd -printtoconsole -conf=${this.configPath}` + (data.network === NetworkType.TESTNET ? ' -testnet' : '');
+              return ` dashd -printtoconsole -conf=${path.join(this.configDir, Dash.configName(data))}` + (data.network === NetworkType.TESTNET ? ' -testnet' : '');
             },
           },
         ];
@@ -99,6 +99,10 @@ export class Dash extends Bitcoin {
     }
   }
 
+  static configName(data: CryptoNodeData): string {
+    return 'dash.conf';
+  }
+
   id: string;
   ticker = 'dash';
   name = 'Dash';
@@ -117,7 +121,7 @@ export class Dash extends Bitcoin {
   dockerNetwork = defaultDockerNetwork;
   dataDir = '';
   walletDir = '';
-  configPath = '';
+  configDir = '';
   role = Dash.roles[0];
 
   constructor(data: CryptoNodeData, docker?: Docker) {
@@ -134,7 +138,7 @@ export class Dash extends Bitcoin {
     this.dockerNetwork = data.dockerNetwork || this.dockerNetwork;
     this.dataDir = data.dataDir || this.dataDir;
     this.walletDir = data.walletDir || this.dataDir;
-    this.configPath = data.configPath || this.configPath;
+    this.configDir = data.configDir || this.configDir;
     this.createdAt = data.createdAt || this.createdAt;
     this.updatedAt = data.updatedAt || this.updatedAt;
     this.remote = data.remote || this.remote;
@@ -147,11 +151,14 @@ export class Dash extends Bitcoin {
     this.dockerImage = this.remote ? '' : data.dockerImage ? data.dockerImage : (versionObj.image || '');
     this.archival = data.archival || this.archival;
     this.role = data.role || this.role;
-    if(docker)
+    if(docker) {
       this._docker = docker;
+      this._fs = new FS(docker);
+    }
   }
 
-  async start(): Promise<ChildProcess> {
+  async start(): Promise<ChildProcess[]> {
+    const fs = this._fs;
     const versions = Dash.versions(this.client, this.network);
     const versionData = versions.find(({ version }) => version === this.version) || versions[0];
     if(!versionData)
@@ -159,7 +166,7 @@ export class Dash extends Bitcoin {
     const {
       dataDir: containerDataDir,
       walletDir: containerWalletDir,
-      configPath: containerConfigPath,
+      configDir: containerConfigDir,
     } = versionData;
     let args = [
       '-i',
@@ -180,11 +187,13 @@ export class Dash extends Bitcoin {
     args = [...args, '-v', `${walletDir}:${containerWalletDir}`];
     await fs.ensureDir(walletDir);
 
-    const configPath = this.configPath || path.join(tmpdir, uuid());
+    const configDir = this.configDir || path.join(tmpdir, uuid());
+    await fs.ensureDir(configDir);
+    const configPath = path.join(configDir, Dash.configName(this));
     const configExists = await fs.pathExists(configPath);
     if(!configExists)
       await fs.writeFile(configPath, this.generateConfig(), 'utf8');
-    args = [...args, '-v', `${configPath}:${containerConfigPath}`];
+    args = [...args, '-v', `${configDir}:${containerConfigDir}`];
 
     await this._docker.pull(this.dockerImage, str => this._logOutput(str));
 
@@ -197,7 +206,10 @@ export class Dash extends Bitcoin {
       code => this._logClose(code),
     );
     this._instance = instance;
-    return instance;
+    this._instances = [
+      instance,
+    ];
+    return this.instances();
   }
 
   generateConfig(): string {

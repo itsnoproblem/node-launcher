@@ -10,6 +10,8 @@ import { Avalanche as AVAX } from './types/avalanche/avalanche';
 import { Pocket as POKT } from './types/pocket/pocket';
 import { Fuse as FUSE } from './types/fuse/fuse';
 import { Harmony as ONE } from './types/harmony/harmony';
+import { OKEX as OEC } from './types/oec/okex';
+import { IOTEX } from './types/iotex/iotex';
 import * as constants from './constants';
 import { Docker } from './util/docker';
 
@@ -28,4 +30,6 @@ export {
   POKT,
   XDAI,
   ONE,
+  OEC,
+  IOTEX,
 };

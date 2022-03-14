@@ -6,10 +6,10 @@ import { Docker } from '../../util/docker';
 import { ChildProcess } from 'child_process';
 import os from 'os';
 import path from 'path';
-import fs from 'fs-extra';
 import { filterVersionsByNetworkType } from '../../util';
 import { openEthereumConfig } from './config/openethereum';
 import { nethermindConfig } from './config/nethermind';
+import { FS } from '../../util/fs';
 
 
 export class Xdai extends Ethereum {
@@ -26,11 +26,11 @@ export class Xdai extends Ethereum {
             image: 'rburgett/openethereum:v3.3.0-rc.15',
             dataDir: '/blockchain/data',
             walletDir: '/blockchain/keys',
-            configPath: '/blockchain/config.toml',
+            configDir: '/blockchain/config',
             networks: [NetworkType.MAINNET, NetworkType.TESTNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` --config=${this.configPath}`;
+              return ` --config=${path.join(this.configDir, Xdai.configName(data))}`;
             },
           },
           {
@@ -39,11 +39,11 @@ export class Xdai extends Ethereum {
             image: 'rburgett/openethereum:v3.2.6',
             dataDir: '/blockchain/data',
             walletDir: '/blockchain/keys',
-            configPath: '/blockchain/config.toml',
+            configDir: '/blockchain/config',
             networks: [NetworkType.MAINNET, NetworkType.TESTNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` --config=${this.configPath}`;
+              return ` --config=${path.join(this.configDir, Xdai.configName(data))}`;
             },
           },
         ];
@@ -56,11 +56,11 @@ export class Xdai extends Ethereum {
             image: 'nethermind/nethermind:1.12.3',
             dataDir: '/nethermind/nethermind_db',
             walletDir: '/nethermind/keystore',
-            configPath: '/nethermind/configs/xdai.cfg',
+            configDir: '/nethermind/configs',
             networks: [NetworkType.MAINNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` --config xdai`;
+              return ' --config xdai';
             },
           },
         ];
@@ -119,6 +119,15 @@ export class Xdai extends Ethereum {
     }
   }
 
+  static configName(data: CryptoNodeData): string {
+    switch(data.client) {
+      case NodeClient.NETHERMIND:
+        return 'xdai.cfg';
+      default:
+        return 'config.toml';
+    }
+  }
+
   id: string;
   ticker = 'xdai';
   name = 'xDAI';
@@ -137,7 +146,7 @@ export class Xdai extends Ethereum {
   dockerNetwork = defaultDockerNetwork;
   dataDir = '';
   walletDir = '';
-  configPath = '';
+  configDir = '';
   role = Xdai.roles[0];
 
   constructor(data: CryptoNodeData, docker?: Docker) {
@@ -154,7 +163,7 @@ export class Xdai extends Ethereum {
     this.dockerNetwork = data.dockerNetwork || this.dockerNetwork;
     this.dataDir = data.dataDir || this.dataDir;
     this.walletDir = data.walletDir || this.dataDir;
-    this.configPath = data.configPath || this.configPath;
+    this.configDir = data.configDir || this.configDir;
     this.createdAt = data.createdAt || this.createdAt;
     this.updatedAt = data.updatedAt || this.updatedAt;
     this.remote = data.remote || this.remote;
@@ -167,11 +176,14 @@ export class Xdai extends Ethereum {
     this.dockerImage = this.remote ? '' : data.dockerImage ? data.dockerImage : (versionObj.image || '');
     this.archival = data.archival || this.archival;
     this.role = data.role || this.role;
-    if(docker)
+    if(docker) {
       this._docker = docker;
+      this._fs = new FS(docker);
+    }
   }
 
-  async start(): Promise<ChildProcess> {
+  async start(): Promise<ChildProcess[]> {
+    const fs = this._fs;
     const versions = Xdai.versions(this.client, this.network);
     const versionData = versions.find(({ version }) => version === this.version) || versions[0];
     if(!versionData)
@@ -179,7 +191,7 @@ export class Xdai extends Ethereum {
     const {
       dataDir: containerDataDir,
       walletDir: containerWalletDir,
-      configPath: containerConfigPath,
+      configDir: containerConfigDir,
     } = versionData;
     let args = [
       '-i',
@@ -200,11 +212,13 @@ export class Xdai extends Ethereum {
     args = [...args, '-v', `${walletDir}:${containerWalletDir}`];
     await fs.ensureDir(walletDir);
 
-    const configPath = this.configPath || path.join(tmpdir, uuid());
+    const configDir = this.configDir || path.join(tmpdir, uuid());
+    await fs.ensureDir(configDir);
+    const configPath = path.join(configDir, Xdai.configName(this));
     const configExists = await fs.pathExists(configPath);
     if(!configExists)
       await fs.writeFile(configPath, this.generateConfig(), 'utf8');
-    args = [...args, '-v', `${configPath}:${containerConfigPath}`];
+    args = [...args, '-v', `${configDir}:${containerConfigDir}`];
 
     await this._docker.pull(this.dockerImage, str => this._logOutput(str));
 
@@ -217,7 +231,10 @@ export class Xdai extends Ethereum {
       code => this._logClose(code),
     );
     this._instance = instance;
-    return instance;
+    this._instances = [
+      instance,
+    ];
+    return this.instances();
   }
 
   generateConfig(): string {

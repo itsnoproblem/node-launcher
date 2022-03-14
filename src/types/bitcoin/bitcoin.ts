@@ -5,10 +5,12 @@ import { Docker } from '../../util/docker';
 import { ChildProcess } from 'child_process';
 import { v4 as uuid} from 'uuid';
 import request from 'superagent';
-import fs from 'fs-extra';
 import path from 'path';
 import os from 'os';
 import { EventEmitter } from 'events';
+import { FS } from '../../util/fs';
+
+const defaultDocker = new Docker();
 
 const coreConfig = `
 server=1
@@ -39,11 +41,11 @@ export class Bitcoin extends EventEmitter implements CryptoNodeData, CryptoNode,
             image: 'rburgett/bitcoin:v0.21.0',
             dataDir: '/opt/blockchain/data',
             walletDir: '/opt/blockchain/wallets',
-            configPath: '/opt/blockchain/bitcoin.conf',
+            configDir: '/opt/blockchain/config',
             networks: [NetworkType.MAINNET, NetworkType.TESTNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` bitcoind -conf=${this.configPath}` + (data.network === NetworkType.TESTNET ? ' -testnet' : '');
+              return ` bitcoind -conf=${path.join(this.configDir, Bitcoin.configName(data))}` + (data.network === NetworkType.TESTNET ? ' -testnet' : '');
             },
           },
         ];
@@ -154,6 +156,10 @@ export class Bitcoin extends EventEmitter implements CryptoNodeData, CryptoNode,
     return true;
   }
 
+  static configName(data: CryptoNodeData): string {
+    return 'bitcoin.conf';
+  }
+
   id: string;
   ticker = 'btc';
   name = 'Bitcoin';
@@ -172,7 +178,7 @@ export class Bitcoin extends EventEmitter implements CryptoNodeData, CryptoNode,
   dockerNetwork = defaultDockerNetwork;
   dataDir = '';
   walletDir = '';
-  configPath = '';
+  configDir = '';
   createdAt = '';
   updatedAt = '';
   remote = false;
@@ -180,8 +186,10 @@ export class Bitcoin extends EventEmitter implements CryptoNodeData, CryptoNode,
   remoteProtocol = '';
   role = Bitcoin.roles[0];
 
-  _docker = new Docker();
+  _docker = defaultDocker;
+  _fs = new FS(defaultDocker);
   _instance?: ChildProcess;
+  _instances: ChildProcess[] = [];
   _requestTimeout = 10000;
   _logError(err: string|Error): void {
     err = typeof err === 'string' ? new Error(err) : err;
@@ -208,7 +216,7 @@ export class Bitcoin extends EventEmitter implements CryptoNodeData, CryptoNode,
     this.dockerNetwork = data.dockerNetwork || this.dockerNetwork;
     this.dataDir = data.dataDir || this.dataDir;
     this.walletDir = data.walletDir || this.dataDir;
-    this.configPath = data.configPath || this.configPath;
+    this.configDir = data.configDir || this.configDir;
     this.createdAt = data.createdAt || this.createdAt;
     this.updatedAt = data.updatedAt || this.updatedAt;
     this.remote = data.remote || this.remote;
@@ -221,8 +229,10 @@ export class Bitcoin extends EventEmitter implements CryptoNodeData, CryptoNode,
     this.dockerImage = this.remote ? '' : data.dockerImage ? data.dockerImage : (versionObj.image || '');
     this.archival = data.archival || this.archival;
     this.role = data.role || this.role;
-    if(docker)
+    if(docker) {
       this._docker = docker;
+      this._fs = new FS(docker);
+    }
   }
 
   endpoint(): string {
@@ -257,7 +267,7 @@ export class Bitcoin extends EventEmitter implements CryptoNodeData, CryptoNode,
       dockerNetwork: this.dockerNetwork,
       dataDir: this.dataDir,
       walletDir: this.walletDir,
-      configPath: this.configPath,
+      configDir: this.configDir,
       createdAt: this.createdAt,
       updatedAt: this.updatedAt,
       remote: this.remote,
@@ -284,7 +294,8 @@ export class Bitcoin extends EventEmitter implements CryptoNodeData, CryptoNode,
       this.rpcPassword);
   }
 
-  async start(): Promise<ChildProcess> {
+  async start(): Promise<ChildProcess[]> {
+    const fs = this._fs;
     const versions = Bitcoin.versions(this.client, this.network);
     const versionData = versions.find(({ version }) => version === this.version) || versions[0];
     if(!versionData)
@@ -292,7 +303,7 @@ export class Bitcoin extends EventEmitter implements CryptoNodeData, CryptoNode,
     const {
       dataDir: containerDataDir,
       walletDir: containerWalletDir,
-      configPath: containerConfigPath,
+      configDir: containerConfigDir,
     } = versionData;
     let args = [
       '-i',
@@ -313,11 +324,13 @@ export class Bitcoin extends EventEmitter implements CryptoNodeData, CryptoNode,
     args = [...args, '-v', `${walletDir}:${containerWalletDir}`];
     await fs.ensureDir(walletDir);
 
-    const configPath = this.configPath || path.join(tmpdir, uuid());
+    const configDir = this.configDir || path.join(tmpdir, uuid());
+    await fs.ensureDir(configDir);
+    const configPath = path.join(configDir, Bitcoin.configName(this));
     const configExists = await fs.pathExists(configPath);
     if(!configExists)
       await fs.writeFile(configPath, this.generateConfig(), 'utf8');
-    args = [...args, '-v', `${configPath}:${containerConfigPath}`];
+    args = [...args, '-v', `${configDir}:${containerConfigDir}`];
 
     await this._docker.pull(this.dockerImage, str => this._logOutput(str));
 
@@ -330,7 +343,10 @@ export class Bitcoin extends EventEmitter implements CryptoNodeData, CryptoNode,
       code => this._logClose(code),
     );
     this._instance = instance;
-    return instance;
+    this._instances = [
+      instance,
+    ];
+    return this.instances();
   }
 
   stop():Promise<void> {
@@ -364,6 +380,10 @@ export class Bitcoin extends EventEmitter implements CryptoNodeData, CryptoNode,
         resolve();
       }
     });
+  }
+
+  instances(): ChildProcess[] {
+    return [...this._instances];
   }
 
   _runCheck(method: string): void {

@@ -7,8 +7,8 @@ export interface VersionDockerImage {
   image: string;
   dataDir: string;
   walletDir: string;
+  configDir: string;
   logDir?: string;
-  configPath: string;
   networks: string[],
   breaking: boolean,
   generateRuntimeArgs(data: CryptoNodeData): string;
@@ -36,7 +36,7 @@ export interface CryptoNodeData {
   dockerNetwork?: string;
   dataDir?: string;
   walletDir?: string;
-  configPath?: string;
+  configDir?: string;
   passwordPath?: string;
   domain?: string;
   address?: string;
@@ -56,7 +56,7 @@ export interface CryptoNode {
   _logOutput(output: string): void;
   _logClose(exitCode: number): void;
   _requestTimeout: number;
-  start(): Promise<ChildProcess>;
+  start(): Promise<ChildProcess[]>;
   stop(): void;
   isRunning(): Promise<boolean>;
   toObject(): CryptoNodeData;
@@ -81,6 +81,9 @@ export abstract class CryptoNodeStatic {
     return [];
   }
   static generateConfig(client: string, network: string, peerPort: number, rpcPort: number, rpcUsername: string, rpcPassword: string): string {
+    return '';
+  }
+  static configName(data: CryptoNodeData): string {
     return '';
   }
 }

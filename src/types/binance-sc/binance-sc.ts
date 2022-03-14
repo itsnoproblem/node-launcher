@@ -6,9 +6,9 @@ import { Docker } from '../../util/docker';
 import { ChildProcess } from 'child_process';
 import os from 'os';
 import path from 'path';
-import fs from 'fs-extra';
 import { filterVersionsByNetworkType } from '../../util';
 import * as genesis from './genesis';
+import { FS } from '../../util/fs';
 
 const coreConfig = `
 [Eth]
@@ -83,11 +83,11 @@ export class BinanceSC extends Ethereum {
             image: 'rburgett/bsc_geth:v1.1.2',
             dataDir: '/blockchain/data',
             walletDir: '/blockchain/keys',
-            configPath: '/blockchain/config.toml',
+            configDir: '/blockchain/config',
             networks: [NetworkType.MAINNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` --config=${this.configPath}`;
+              return ` --config=${path.join(this.configDir, BinanceSC.configName(data))}`;
             },
           },
           {
@@ -96,11 +96,11 @@ export class BinanceSC extends Ethereum {
             image: 'rburgett/bsc_geth:v1.1.0-beta',
             dataDir: '/blockchain/data',
             walletDir: '/blockchain/keys',
-            configPath: '/blockchain/config.toml',
+            configDir: '/blockchain/config',
             networks: [NetworkType.MAINNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` --config=${this.configPath}`;
+              return ` --config=${path.join(this.configDir, BinanceSC.configName(data))}`;
             },
           },
         ];
@@ -160,6 +160,10 @@ export class BinanceSC extends Ethereum {
     }
   }
 
+  static configName(data: CryptoNodeData): string {
+    return 'config.toml';
+  }
+
   id: string;
   ticker = 'bsc';
   name = 'Binance Smart Chain';
@@ -178,7 +182,7 @@ export class BinanceSC extends Ethereum {
   dockerNetwork = defaultDockerNetwork;
   dataDir = '';
   walletDir = '';
-  configPath = '';
+  configDir = '';
 
   constructor(data: CryptoNodeData, docker?: Docker) {
     super(data, docker);
@@ -194,7 +198,7 @@ export class BinanceSC extends Ethereum {
     this.dockerNetwork = data.dockerNetwork || this.dockerNetwork;
     this.dataDir = data.dataDir || this.dataDir;
     this.walletDir = data.walletDir || this.dataDir;
-    this.configPath = data.configPath || this.configPath;
+    this.configDir = data.configDir || this.configDir;
     this.createdAt = data.createdAt || this.createdAt;
     this.updatedAt = data.updatedAt || this.updatedAt;
     this.remote = data.remote || this.remote;
@@ -206,11 +210,14 @@ export class BinanceSC extends Ethereum {
     this.clientVersion = data.clientVersion || versionObj.clientVersion || '';
     this.dockerImage = this.remote ? '' : data.dockerImage ? data.dockerImage : (versionObj.image || '');
     this.archival = data.archival || this.archival;
-    if(docker)
+    if(docker) {
       this._docker = docker;
+      this._fs = new FS(docker);
+    }
   }
 
-  async start(): Promise<ChildProcess> {
+  async start(): Promise<ChildProcess[]> {
+    const fs = this._fs;
     const versions = BinanceSC.versions(this.client, this.network);
     const versionData = versions.find(({ version }) => version === this.version) || versions[0];
     if(!versionData)
@@ -218,7 +225,7 @@ export class BinanceSC extends Ethereum {
     const {
       dataDir: containerDataDir,
       walletDir: containerWalletDir,
-      configPath: containerConfigPath,
+      configDir: containerConfigDir,
     } = versionData;
     let args = [
       '-i',
@@ -239,11 +246,13 @@ export class BinanceSC extends Ethereum {
     args = [...args, '-v', `${walletDir}:${containerWalletDir}`];
     await fs.ensureDir(walletDir);
 
-    const configPath = this.configPath || path.join(tmpdir, uuid());
+    const configDir = this.configDir || path.join(tmpdir, uuid());
+    await fs.ensureDir(configDir);
+    const configPath = path.join(configDir, BinanceSC.configName(this));
     const configExists = await fs.pathExists(configPath);
     if(!configExists)
       await fs.writeFile(configPath, this.generateConfig(), 'utf8');
-    args = [...args, '-v', `${configPath}:${containerConfigPath}`];
+    args = [...args, '-v', `${configDir}:${containerConfigDir}`];
 
     const genesisPath = path.join(dataDir, 'genesis.json');
     const genesisExists = await fs.pathExists(genesisPath);
@@ -276,7 +285,10 @@ export class BinanceSC extends Ethereum {
       code => this._logClose(code),
     );
     this._instance = instance;
-    return instance;
+    this._instances = [
+      instance,
+    ];
+    return this.instances();
   }
 
   generateConfig(): string {

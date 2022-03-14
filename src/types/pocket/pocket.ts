@@ -6,10 +6,10 @@ import { v4 as uuid } from 'uuid';
 import { ChildProcess } from 'child_process';
 import os from 'os';
 import path from 'path';
-import fs from 'fs-extra';
 import { PocketGenesis } from './genesis';
 import request from 'superagent';
 import { filterVersionsByNetworkType } from '../../util';
+import { FS } from '../../util/fs';
 
 const coreConfig = `
 {
@@ -184,7 +184,7 @@ export class Pocket extends Bitcoin {
             image: 'rburgett/pocketcore:RC-0.7.0.1',
             dataDir: '/root/.pocket',
             walletDir: '/root/pocket-keys',
-            configPath: '',
+            configDir: '',
             networks: [NetworkType.MAINNET, NetworkType.TESTNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
@@ -198,7 +198,7 @@ export class Pocket extends Bitcoin {
             image: 'rburgett/pocketcore:RC-0.7.0',
             dataDir: '/root/.pocket',
             walletDir: '/root/pocket-keys',
-            configPath: '',
+            configDir: '',
             networks: [NetworkType.MAINNET, NetworkType.TESTNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
@@ -212,7 +212,7 @@ export class Pocket extends Bitcoin {
             image: 'rburgett/pocketcore:RC-0.6.4.1',
             dataDir: '/root/.pocket',
             walletDir: '/root/pocket-keys',
-            configPath: '',
+            configDir: '',
             networks: [NetworkType.MAINNET, NetworkType.TESTNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
@@ -226,7 +226,7 @@ export class Pocket extends Bitcoin {
             image: 'rburgett/pocketcore:RC-0.6.4',
             dataDir: '/root/.pocket',
             walletDir: '/root/pocket-keys',
-            configPath: '',
+            configDir: '',
             networks: [NetworkType.MAINNET, NetworkType.TESTNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
@@ -240,7 +240,7 @@ export class Pocket extends Bitcoin {
             image: 'rburgett/pocketcore:RC-0.6.3.7',
             dataDir: '/root/.pocket',
             walletDir: '/root/pocket-keys',
-            configPath: '',
+            configDir: '',
             networks: [NetworkType.MAINNET, NetworkType.TESTNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
@@ -254,7 +254,7 @@ export class Pocket extends Bitcoin {
             image: 'rburgett/pocketcore:RC-0.6.3.6',
             dataDir: '/root/.pocket',
             walletDir: '/root/pocket-keys',
-            configPath: '',
+            configDir: '',
             networks: [NetworkType.MAINNET, NetworkType.TESTNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
@@ -324,6 +324,10 @@ export class Pocket extends Bitcoin {
     }
   }
 
+  static configName(data: CryptoNodeData): string {
+    return 'config.json';
+  }
+
   id: string;
   ticker = 'pokt';
   name = 'Pocket';
@@ -343,7 +347,7 @@ export class Pocket extends Bitcoin {
   dockerNetwork = defaultDockerNetwork;
   dataDir = '';
   walletDir = '';
-  configPath = '';
+  configDir = '';
   domain = '';
   address = '';
   role = Pocket.roles[0];
@@ -363,7 +367,7 @@ export class Pocket extends Bitcoin {
     this.dockerNetwork = data.dockerNetwork || this.dockerNetwork;
     this.dataDir = data.dataDir || this.dataDir;
     this.walletDir = data.walletDir || this.dataDir;
-    this.configPath = data.configPath || this.configPath;
+    this.configDir = data.configDir || this.configDir;
     this.createdAt = data.createdAt || this.createdAt;
     this.updatedAt = data.updatedAt || this.updatedAt;
     this.remote = data.remote || this.remote;
@@ -381,11 +385,14 @@ export class Pocket extends Bitcoin {
     this.privKeyPass = data.privKeyPass || uuid();
     this.role = data.role || this.role;
 
-    if(docker)
+    if(docker) {
       this._docker = docker;
+      this._fs = new FS(docker);
+    }
   }
 
-  async start(): Promise<ChildProcess> {
+  async start(): Promise<ChildProcess[]> {
+    const fs = this._fs;
     const versions = Pocket.versions(this.client, this.network);
     const versionData = versions.find(({ version }) => version === this.version) || versions[0];
     if(!versionData)
@@ -404,19 +411,21 @@ export class Pocket extends Bitcoin {
     const walletDir = this.walletDir || path.join(tmpdir, uuid());
     await fs.ensureDir(walletDir);
 
-    const configPath = this.configPath || path.join(tmpdir, uuid());
+    const configDir = this.configDir || path.join(tmpdir, uuid());
+    await fs.ensureDir(configDir);
+    const configPath = path.join(configDir, Pocket.configName(this));
     const configExists = await fs.pathExists(configPath);
     if(!configExists)
       await fs.writeFile(configPath, this.generateConfig(), 'utf8');
 
-    const configDir = path.join(dataDir, 'config');
-    await fs.ensureDir(configDir);
+    const dataDirConfigDir = path.join(dataDir, 'config');
+    await fs.ensureDir(dataDirConfigDir);
 
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment
     // @ts-ignore
-    await fs.copy(configPath, path.join(configDir, 'config.json'), {force: true});
+    await fs.copy(configPath, path.join(dataDirConfigDir, Pocket.configName(this)), {force: true});
 
-    const genesisPath = path.join(configDir, 'genesis.json');
+    const genesisPath = path.join(dataDirConfigDir, 'genesis.json');
     const genesisExists = await fs.pathExists(genesisPath);
     if(!genesisExists)
       await fs.writeFile(genesisPath, PocketGenesis[this.network].trim(), 'utf8');
@@ -460,14 +469,18 @@ export class Pocket extends Bitcoin {
       '-v', `${walletDir}:${containerWalletDir}`,
       '--entrypoint', 'pocket',
     ];
-    this._instance = this._docker.run(
+    const instance = this._docker.run(
       this.dockerImage + versionData.generateRuntimeArgs(this),
       args,
       output => this._logOutput(output),
       err => this._logError(err),
       code => this._logClose(code),
     );
-    return this._instance;
+    this._instance = instance;
+    this._instances = [
+      instance,
+    ];
+    return this.instances();
   }
 
   generateConfig(): string {

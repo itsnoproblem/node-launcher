@@ -6,9 +6,9 @@ import { Docker } from '../../util/docker';
 import { ChildProcess } from 'child_process';
 import os from 'os';
 import path from 'path';
-import fs from 'fs-extra';
 import { filterVersionsByNetworkType } from '../../util';
 import Web3 from 'web3';
+import { FS } from '../../util/fs';
 
 const testnetBootnodes = [
   'enode://aaa92938fb3b4b073ea811894376d597a3feef30ce999a8bee617c24b7acd4021f16f94856e5c48f25b4fde999fc5df27de73d2c394e6c46cc5d44e012dd9e35@3.123.228.59:30303',
@@ -90,12 +90,12 @@ export class Fuse extends Ethereum {
             imageNetstat: 'fusenet/spark-netstat:1.0.0',
             dataDir: '/root/data',
             walletDir: '/root/keystore',
-            configPath: '/root/config.toml',
+            configDir: '/root/config',
             passwordPath: '/root/pass.pwd',
             networks: [NetworkType.TESTNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` --no-warp --config=${this.configPath}`;
+              return ` --no-warp --config=${path.join(this.configDir, Fuse.configName(data))}`;
             },
           },
           {
@@ -106,12 +106,12 @@ export class Fuse extends Ethereum {
             imageNetstat: '',
             dataDir: '/root/data',
             walletDir: '/root/keystore',
-            configPath: '/root/config.toml',
+            configDir: '/root/config',
             passwordPath: '/root/pass.pwd',
             networks: [NetworkType.TESTNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` --no-warp --config=${this.configPath} --bootnodes ${testnetBootnodes}`;
+              return ` --no-warp --config=${path.join(this.configDir, Fuse.configName(data))} --bootnodes ${testnetBootnodes}`;
             },
           },
           {
@@ -122,12 +122,12 @@ export class Fuse extends Ethereum {
             imageNetstat: '',
             dataDir: '/root/data',
             walletDir: '/root/keystore',
-            configPath: '/root/config.toml',
+            configDir: '/root/config',
             passwordPath: '/root/pass.pwd',
             networks: [NetworkType.MAINNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` --no-warp --config=${this.configPath}`;
+              return ` --no-warp --config=${path.join(this.configDir, Fuse.configName(data))}`;
             },
           },
           {
@@ -138,12 +138,12 @@ export class Fuse extends Ethereum {
             imageNetstat: '',
             dataDir: '/root/data',
             walletDir: '/root/keystore',
-            configPath: '/root/config.toml',
+            configDir: '/root/config',
             passwordPath: '/root/pass.pwd',
             networks: [NetworkType.MAINNET],
             breaking: false,
             generateRuntimeArgs(data: CryptoNodeData): string {
-              return ` --config=${this.configPath}`;
+              return ` --config=${path.join(this.configDir, Fuse.configName(data))}`;
             },
           },
         ];
@@ -216,6 +216,10 @@ export class Fuse extends Ethereum {
     }
   }
 
+  static configName(data: CryptoNodeData): string {
+    return 'config.toml';
+  }
+
   id: string;
   ticker = 'fuse';
   name = 'Fuse';
@@ -234,7 +238,7 @@ export class Fuse extends Ethereum {
   dockerNetwork = defaultDockerNetwork;
   dataDir = '';
   walletDir = '';
-  configPath = '';
+  configDir = '';
   passwordPath = '';
   key: any;
   keyPass = '';
@@ -255,7 +259,7 @@ export class Fuse extends Ethereum {
     this.dockerNetwork = data.dockerNetwork || this.dockerNetwork;
     this.dataDir = data.dataDir || this.dataDir;
     this.walletDir = data.walletDir || this.dataDir;
-    this.configPath = data.configPath || this.configPath;
+    this.configDir = data.configDir || this.configDir;
     this.passwordPath = data.passwordPath || this.passwordPath;
     this.createdAt = data.createdAt || this.createdAt;
     this.updatedAt = data.updatedAt || this.updatedAt;
@@ -274,8 +278,10 @@ export class Fuse extends Ethereum {
     this.address = data.address || this.address;
     if(this.role === Role.VALIDATOR && !this.key)
       this.createAccount();
-    if(docker)
+    if(docker) {
       this._docker = docker;
+      this._fs = new FS(docker);
+    }
   }
 
   toObject(): CryptoNodeData {
@@ -289,7 +295,8 @@ export class Fuse extends Ethereum {
     return dataObj as CryptoNodeData;
   }
 
-  async start(): Promise<ChildProcess> {
+  async start(): Promise<ChildProcess[]> {
+    const fs = this._fs;
     const versions = Fuse.versions(this.client, this.network);
     const versionData = versions.find(({ version }) => version === this.version) || versions[0];
     if(!versionData)
@@ -297,7 +304,7 @@ export class Fuse extends Ethereum {
     const {
       dataDir: containerDataDir,
       walletDir: containerWalletDir,
-      configPath: containerConfigPath,
+      configDir: containerConfigDir,
       passwordPath: containerPasswordPath,
     } = versionData;
     let args = [
@@ -321,11 +328,13 @@ export class Fuse extends Ethereum {
     args = [...args, '-v', `${walletDir}:${containerWalletDir}`];
     await fs.ensureDir(walletDir);
 
-    const configPath = this.configPath || path.join(tmpdir, uuid());
+    const configDir = this.configDir || path.join(tmpdir, uuid());
+    await fs.ensureDir(configDir);
+    const configPath = path.join(configDir, Fuse.configName(this));
     const configExists = await fs.pathExists(configPath);
     if(!configExists)
       await fs.writeFile(configPath, this.generateConfig(), 'utf8');
-    args = [...args, '-v', `${configPath}:${containerConfigPath}`];
+    args = [...args, '-v', `${configDir}:${containerConfigDir}`];
 
     await this._docker.pull(this.dockerImage, str => this._logOutput(str));
 
@@ -335,7 +344,7 @@ export class Fuse extends Ethereum {
       if(!passwordFileExists)
         await fs.writeFile(passwordPath, this.keyPass, 'utf8');
       args = [...args, '-v', `${passwordPath}:${containerPasswordPath}`];
-      if(fs.readdirSync(walletDir).length === 0) {
+      if((await fs.readdir(walletDir)).length === 0) {
         const keyFilePath = path.join(os.tmpdir(), uuid());
         await fs.writeJson(keyFilePath, this.key);
         const accountPath = `/UTC--${new Date().toISOString().replace(/:/g, '-')}--${this.address}.json`;
@@ -364,7 +373,6 @@ export class Fuse extends Ethereum {
       err => this._logError(err),
       code => this._logClose(code),
     );
-    this._instance = instance;
 
     if(this.role === Role.VALIDATOR) {
       await new Promise(resolve => setTimeout(resolve, 1000));
@@ -451,7 +459,11 @@ export class Fuse extends Ethereum {
       }
     }
 
-    return instance;
+    this._instance = instance;
+    this._instances = [
+      instance,
+    ];
+    return this.instances();
   }
 
   validatorAppContainerName(): string {
